@@ -1,81 +1,60 @@
 <script>
   import { io } from "socket.io-client";
+  $: state = "";
+  const urls = [
+    "stun:stun.infra.net:3478",
+    "stun:stun.crononauta.com:3478",
+    "stun:stun.xtratelecom.es:3478",
+    "stun:stun3.l.google.com:19305",
+    "stun:stun.coffee-sen.com:3478",
+    "stun:stun.futurasp.es:3478",
+    "stun:stun.millenniumarts.org:3478",
+    "stun:stun.uls.co.za:3478",
+    "stun:stun.oncloud7.ch:3478",
+    "stun:stun1.l.google.com:19302",
+    "stun:stun.telbo.com:3478",
+    "stun:stun.fitauto.ru:3478",
+    "stun:stun.edwin-wiegele.at:3478",
+    "stun:stun.marble.io:3478",
+    "stun:stun.lineaencasa.com:3478",
+    "stun:stun.jumblo.com:3478",
+    "stun:stun4.3cx.com:3478",
+  ];
 
-  const socket = io("https://e4e4-103-221-209-21.ngrok.io", {
+  const socket = io("https://3d89-103-221-209-13.ngrok.io/", {
     transports: ["websocket", "polling"],
   });
 
   let isHost = false,
     current = undefined,
-    thisPeer = "",
-    thisStream;
+    run = 0,
+    thisStream,
+    remoteStream = new MediaStream();
 
   let pc = {},
     candidates = [];
 
-  // $: state = [...pc.map((e) => e.connectionState)];
-
-  const createPeerConnection = (n) => {
-    const rpc = new RTCPeerConnection({
-      iceServers: [
-        {
-          urls: [
-            "stun:stun1.l.google.com:19302",
-            "stun:stun1.l.google.com:19302",
-          ],
-        },
-      ],
-      iceCandidatePoolSize: 10,
-    });
-
-    rpc.addStream(thisStream);
-
-    rpc.onicecandidate = (e) => {
-      if (e.candidate) {
-        candidates.push(e.candidate);
-      }
-    };
-
-    rpc.oniceconnectionstatechange = (e) =>
-      (state = e.currentTarget.connectionState);
-
-    rpc.ontrack = (e) => {
-      console.log(`Track is here. :: ${e}`);
-      const vid = document.createElement("video");
-      vid.setAttribute("class", "video");
-      vid.setAttribute("id", `remote-video-${n}`);
-      vid.setAttribute("autoplay", "autoplay");
-      vid.setAttribute("muted", "muted");
-      vid.setAttribute("controls", "controls");
-      console.log(vid);
-      document.querySelector("main").append(vid);
-    };
-
-    return rpc;
+  const addTrackToVideo = () => {
+    run += 1;
+    if (run === 2) {
+      document.querySelector("#remote-video").srcObject = remoteStream;
+      // console.log(remoteStream);
+    }
   };
 
-  const createOffer = (n) => {
-    console.log(pc, n);
-    pc[n]
-      .createOffer({
-        offerToReceiveAudio: 1,
-        offerToReceiveVideo: 1,
-      })
-      .then((sdp) => {
-        pc[n].setLocalDescription(sdp);
-        send("SDP", sdp);
-      })
-      .catch(console.log);
-  };
+  // const createOffer = (n) => {};
 
   const createAnswer = (n) => {
+    console.log("Creating Answer");
     pc[n]
       .createAnswer({
-        offerToReceiveAudio: 1,
-        offerToReceiveVideo: 1,
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
       })
       .then((sdp) => {
         pc[n].setLocalDescription(sdp);
+
+        console.log("Sending Answer");
         send("SDP", sdp);
       })
       .catch(console.log);
@@ -83,21 +62,17 @@
 
   socket.on("connection::ok", (socket, host) => {
     console.log(`HOST :: ${host} :: ${socket}`);
-    pc = { ...pc, [socket]: createPeerConnection(1) };
-    thisPeer = socket;
-    if (host) {
-      isHost = host;
-      setTimeout(() => createOffer(socket), 100);
-    }
   });
 
   const send = (event, payload, to) => {
-    // console.log({
-    //   event,
-    //    to: current,
-    //    data: payload
-    // });
     socket.emit(event, { to: current, data: payload });
+  };
+
+  const addTrackToPeerConnection = (id) => {
+    thisStream &&
+      thisStream
+        .getTracks()
+        .forEach((track) => pc[id].addTrack(track, thisStream));
   };
 
   socket.on("SDP", ({ from, data }) => {
@@ -108,44 +83,111 @@
     );
     current = from;
 
-    if (isHost && data.type === "answer") {
-      console.log(pc, thisPeer);
-      pc[thisPeer].setRemoteDescription(new RTCSessionDescription(data));
-      candidates.forEach((e) => send("CANDIDATE", e));
-    } else if (!isHost && data.type === "offer") {
-      console.log(pc, thisPeer);
-      pc[thisPeer].setRemoteDescription(new RTCSessionDescription(data));
-      createAnswer(thisPeer);
+    if (data.type === "answer") {
+      console.log("Recieved Answer :: ", { from, data });
+      // console.log("addTrackToPeerConnection", thisStream);
+      pc[from].setRemoteDescription(data);
+      setTimeout(() => {
+        send("SEND::CANDIDATE", candidates);
+        console.log(pc[from]);
+      }, 300);
+    }
+    // else
+    if (data.type === "offer") {
+      console.log("Recieved Offer :: ", { from, data });
+      // Create Peer Connection for recieving track. :: Guest
+      pc[from] = new RTCPeerConnection({
+        iceServers: [
+          {
+            urls,
+          },
+        ],
+        iceCandidatePoolSize: 2,
+      });
+
+      addTrackToPeerConnection(from);
+
+      state = pc[from].iceGatheringState;
+
+      pc[from].onicecandidate = (e) => {
+        if (e.candidate) {
+          candidates.push(e.candidate);
+        }
+      };
+
+      pc[from].oniceconnectionstatechange = (e) =>
+        (state = e.currentTarget.connectionState);
+
+      pc[from].ontrack = (e) => {
+        // console.log(e);
+        remoteStream.addTrack(e.track);
+        addTrackToVideo();
+      };
+
+      // console.log(pc);
+      pc[from].setRemoteDescription(data);
+      setTimeout(() => {
+        // console.log("addTrackToPeerConnection", thisStream);
+        setTimeout(() => createAnswer(from), 300);
+      }, 300);
     }
   });
 
-  socket.on("CANDIDATE", ({ from, data }) => {
-    current = from;
-    console.log("SOCKET ON :: CANDIDATE");
-    data && pc[from].addIceCandidate(new RTCIceCandidate(data));
+  socket.on("CANDIDATE", ({ from, data, type }) => {
+    console.log("SOCKET ON :: CANDIDATE", { data });
+    data && data.forEach((e) => pc[from].addIceCandidate(e));
+    console.log(pc[from]);
+    type !== "recv" && send("RECV::CANDIDATE", candidates);
   });
 
-  socket.on("is::new", (id, count) => {
+  socket.on("is::new", (id) => {
     current = id;
-    if (count > 2) {
-      pc = { ...pc, [id]: createPeerConnection(Object.keys(pc).length) };
-      createOffer(id);
-    } else {
-      createOffer(thisPeer);
-    }
-    console.log(pc);
-  });
+    pc[id] = new RTCPeerConnection({
+      iceServers: [
+        {
+          urls,
+        },
+      ],
+      iceCandidatePoolSize: 2,
+    });
 
-  socket.on("log", (data) => {
-    console.log(`Connections :: ${data}`);
-    // if (data < 3) {
-    //   if (Object.values(pc)[0].connectionState === "new") {
-    //     createOffer(Object.keys(pc)[0]);
-    //   }
-    // }
-  });
+    addTrackToPeerConnection(id);
 
-  socket.on("error", (e) => console.info(e));
+    state = pc[id].iceGatheringState;
+
+    pc[id].onicecandidate = (e) => {
+      if (e.candidate) {
+        candidates.push(e.candidate);
+      }
+    };
+
+    pc[id].oniceconnectionstatechange = (e) =>
+      (state = e.currentTarget.connectionState);
+
+    pc[id].ontrack = (e) => {
+      // console.log(e);
+      remoteStream.addTrack(e.track);
+      addTrackToVideo();
+    };
+
+    // createOffer(id);
+    pc[id].onnegotiationneeded = () => {
+      console.log("Creating Offer");
+      pc[id]
+        .createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true,
+        })
+        .then((sdp) => {
+          pc[id].setLocalDescription(sdp);
+
+          console.log("Sending Offer");
+          send("SDP", sdp);
+        })
+        .catch(console.log);
+    };
+    // console.log(pc);
+  });
 
   let constraints = {
     audio: true,
@@ -176,8 +218,10 @@
   <video class="video" id="self-video" autoplay controls muted>
     <track kind="captions" />
   </video>
-
-  <button class="states">{isHost ? "PEER" : "REMOTE PEER"}</button>
+  <video class="video" id="remote-video" autoplay controls muted>
+    <track kind="captions" />
+  </video>
+  <button class="states">{state}</button>
 </main>
 
 <style>
