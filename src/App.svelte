@@ -21,28 +21,40 @@
     "stun:stun4.3cx.com:3478",
   ];
 
-  const socket = io("https://3d89-103-221-209-13.ngrok.io/", {
+  const latency = 300;
+
+  const socket = io("http://localhost:3000", {
     transports: ["websocket", "polling"],
   });
 
   let isHost = false,
     current = undefined,
     run = 0,
-    thisStream,
-    remoteStream = new MediaStream();
+    thisStream;
 
   let pc = {},
     candidates = [];
 
-  const addTrackToVideo = () => {
-    run += 1;
-    if (run === 2) {
-      document.querySelector("#remote-video").srcObject = remoteStream;
-      // console.log(remoteStream);
-    }
+  const addTrackToVideo = (i) => {
+    // console.log(remoteStream, remoteStream.id);
+    let vid = findOrCreateVid(i);
+    console.log(vid);
+    vid.srcObject = pc[i].remoteStream;
   };
 
-  // const createOffer = (n) => {};
+  const findOrCreateVid = (n) => {
+    let vid = document.querySelector(`#remote-video-${n}`);
+    if (!vid) {
+      vid = document.createElement("video");
+      vid.setAttribute("class", "video svelte-uisvfq");
+      vid.setAttribute("id", `remote-video-${n}`);
+      vid.controls = true;
+      vid.autoplay = true;
+      vid.muted = true;
+      document.querySelector("main").append(vid);
+    }
+    return vid;
+  };
 
   const createAnswer = (n) => {
     console.log("Creating Answer");
@@ -67,12 +79,24 @@
   const send = (event, payload, to) => {
     socket.emit(event, { to: current, data: payload });
   };
-
   const addTrackToPeerConnection = (id) => {
-    thisStream &&
-      thisStream
-        .getTracks()
-        .forEach((track) => pc[id].addTrack(track, thisStream));
+    navigator.mediaDevices
+      .getUserMedia({
+        audio: true,
+        video: false,
+      })
+      .then((stream) => {
+        let video = document.querySelector("#self-video");
+        video.srcObject = stream;
+        stream.getTracks().forEach((track) => pc[id].addTrack(track, stream));
+        console.log("Adding tracks to stream.", id);
+        video.onloadedmetadata = function (e) {
+          video.play();
+        };
+      })
+      .catch((err) => {
+        console.log(`Unable to use MediaStream API : ${err}`);
+      });
   };
 
   socket.on("SDP", ({ from, data }) => {
@@ -85,17 +109,17 @@
 
     if (data.type === "answer") {
       console.log("Recieved Answer :: ", { from, data });
-      // console.log("addTrackToPeerConnection", thisStream);
-      pc[from].setRemoteDescription(data);
       setTimeout(() => {
-        send("SEND::CANDIDATE", candidates);
-        console.log(pc[from]);
-      }, 300);
+        pc[from].setRemoteDescription(data);
+        setTimeout(() => {
+          send("SEND::CANDIDATE", candidates);
+          // console.log(pc[from]);
+        }, latency);
+      }, latency);
     }
-    // else
+
     if (data.type === "offer") {
       console.log("Recieved Offer :: ", { from, data });
-      // Create Peer Connection for recieving track. :: Guest
       pc[from] = new RTCPeerConnection({
         iceServers: [
           {
@@ -105,9 +129,11 @@
         iceCandidatePoolSize: 2,
       });
 
-      addTrackToPeerConnection(from);
+      pc[from].connectedTo = from;
 
-      state = pc[from].iceGatheringState;
+      pc[from].remoteStream = new MediaStream();
+
+      addTrackToPeerConnection(from);
 
       pc[from].onicecandidate = (e) => {
         if (e.candidate) {
@@ -115,29 +141,63 @@
         }
       };
 
-      pc[from].oniceconnectionstatechange = (e) =>
-        (state = e.currentTarget.connectionState);
-
       pc[from].ontrack = (e) => {
-        // console.log(e);
-        remoteStream.addTrack(e.track);
-        addTrackToVideo();
+        console.log("track from host", e);
+        pc[e.target.connectedTo].remoteStream.addTrack(e.track);
+        addTrackToVideo(e.target.connectedTo);
       };
 
-      // console.log(pc);
-      pc[from].setRemoteDescription(data);
+      pc[from].onconnectionstatechange = (event) => {
+        // console.log(event);
+        state = `iceConnection: ${event.target.iceConnectionState} | iceGathering: ${event.target.iceGatheringState} | connectionState: ${event.target.connectionState}`;
+        switch (event.target.connectionState) {
+          case "connected": {
+            console.log("The connection has become fully connected");
+            break;
+          }
+          case "disconnected": {
+            let vid = document.querySelector(
+              `#remote-video-${event.target.connectedTo}`
+            );
+            vid.remove();
+            break;
+          }
+          case "failed": {
+            console.log(
+              "One or more transports has terminated unexpectedly or in an error"
+            );
+            let vid = document.querySelector(
+              `#remote-video-${event.target.connectedTo}`
+            );
+            vid.remove();
+            break;
+          }
+          case "closed": {
+            console.log("The connection has been closed");
+            break;
+          }
+        }
+      };
+
+      console.log(pc);
       setTimeout(() => {
-        // console.log("addTrackToPeerConnection", thisStream);
-        setTimeout(() => createAnswer(from), 300);
-      }, 300);
+        pc[from].setRemoteDescription(data);
+        setTimeout(() => createAnswer(from), latency);
+      }, latency);
     }
   });
 
   socket.on("CANDIDATE", ({ from, data, type }) => {
     console.log("SOCKET ON :: CANDIDATE", { data });
-    data && data.forEach((e) => pc[from].addIceCandidate(e));
+    data &&
+      setTimeout(() => {
+        data.forEach((e) => pc[from].addIceCandidate(e));
+      }, latency);
     console.log(pc[from]);
-    type !== "recv" && send("RECV::CANDIDATE", candidates);
+    // if (type !== "recv") {
+    //   send("RECV::CANDIDATE", candidates);
+    //   console.log("RECV CANDIDATES SEND");
+    // }
   });
 
   socket.on("is::new", (id) => {
@@ -150,6 +210,10 @@
       ],
       iceCandidatePoolSize: 2,
     });
+
+    pc[id].remoteStream = new MediaStream();
+
+    pc[id].connectedTo = id;
 
     addTrackToPeerConnection(id);
 
@@ -165,9 +229,9 @@
       (state = e.currentTarget.connectionState);
 
     pc[id].ontrack = (e) => {
-      // console.log(e);
-      remoteStream.addTrack(e.track);
-      addTrackToVideo();
+      console.log("track from guest", e);
+      pc[e.target.connectedTo].remoteStream.addTrack(e.track);
+      addTrackToVideo(e.target.connectedTo);
     };
 
     // createOffer(id);
@@ -181,46 +245,55 @@
         .then((sdp) => {
           pc[id].setLocalDescription(sdp);
 
-          console.log("Sending Offer");
+          // console.log("Sending Offer");
           send("SDP", sdp);
         })
         .catch(console.log);
     };
-    // console.log(pc);
+
+    pc[id].onconnectionstatechange = (event) => {
+      // console.log(event);
+      state = `iceConnection: ${event.target.iceConnectionState} | iceGathering: ${event.target.iceGatheringState} | connectionState: ${event.target.connectionState}`;
+      switch (event.target.connectionState) {
+        case "connected": {
+          console.log("The connection has become fully connected");
+          break;
+        }
+        case "disconnected": {
+          let vid = document.querySelector(
+            `#remote-video-${event.target.connectedTo}`
+          );
+          vid.remove();
+          break;
+        }
+        case "failed": {
+          console.log(
+            "One or more transports has terminated unexpectedly or in an error"
+          );
+          let vid = document.querySelector(
+            `#remote-video-${event.target.connectedTo}`
+          );
+          vid.remove();
+          break;
+        }
+        case "closed": {
+          console.log("The connection has been closed");
+          break;
+        }
+      }
+    };
+
+    console.log(pc);
   });
-
-  let constraints = {
-    audio: true,
-    video: {
-      width: { min: 1024, ideal: 1280, max: 1920 },
-      height: { min: 576, ideal: 720, max: 1080 },
-    },
-  };
-
-  navigator.mediaDevices
-    .getUserMedia(constraints)
-    .then(function (stream) {
-      /* use the stream */
-      let video = document.querySelector("#self-video");
-      video.srcObject = stream;
-      thisStream = stream;
-      video.onloadedmetadata = function (e) {
-        video.play();
-      };
-    })
-    .catch(function (err) {
-      /* handle the error */
-      console.log(`Unable to use MediaStream API : ${err}`);
-    });
 </script>
 
 <main>
   <video class="video" id="self-video" autoplay controls muted>
     <track kind="captions" />
   </video>
-  <video class="video" id="remote-video" autoplay controls muted>
+  <!-- <video class="video" id="remote-video" autoplay controls muted>
     <track kind="captions" />
-  </video>
+  </video> -->
   <button class="states">{state}</button>
 </main>
 
